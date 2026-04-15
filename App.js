@@ -6,7 +6,6 @@ import {
     KeyboardAvoidingView,
     Modal,
     Platform,
-    SafeAreaView,
     ScrollView,
     StatusBar,
     StyleSheet,
@@ -21,7 +20,6 @@ const STORAGE_KEYS = {
   RECIPES: '@pantry_recipes',
 };
 
-// ─── Palette ───────────────────────────────────────────────────────────────
 const C = {
   bg: '#0f0e0c',
   surface: '#1a1814',
@@ -37,7 +35,6 @@ const C = {
   fiber: '#7ab8c0',
 };
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const calcRatio = (calories, protein) => {
@@ -45,8 +42,7 @@ const calcRatio = (calories, protein) => {
   return (parseFloat(calories) / parseFloat(protein)).toFixed(2);
 };
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
-
+// ─── StatPill ────────────────────────────────────────────────────────────────
 function StatPill({ label, value, color }) {
   return (
     <View style={[styles.statPill, { borderColor: color + '55' }]}>
@@ -69,68 +65,6 @@ function SectionHeader({ title, action, actionLabel }) {
   );
 }
 
-// ─── Add Ingredient Modal ────────────────────────────────────────────────────
-function AddIngredientModal({ visible, onClose, onSave }) {
-  const [name, setName] = useState('');
-  const [servingG, setServingG] = useState('');
-  const [calories, setCalories] = useState('');
-  const [protein, setProtein] = useState('');
-  const [fiber, setFiber] = useState('');
-
-  const reset = () => {
-    setName(''); setServingG(''); setCalories(''); setProtein(''); setFiber('');
-  };
-
-  const handleSave = () => {
-    if (!name.trim() || !servingG || !calories || !protein) {
-      Alert.alert('Missing fields', 'Name, serving size, calories, and protein are required.');
-      return;
-    }
-    onSave({
-      id: uid(),
-      name: name.trim(),
-      servingG: parseFloat(servingG),
-      calories: parseFloat(calories),
-      protein: parseFloat(protein),
-      fiber: parseFloat(fiber) || 0,
-    });
-    reset();
-    onClose();
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>New Ingredient</Text>
-
-          <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. High Protein Greek Yogurt" />
-          <Field label="Serving size (g)" value={servingG} onChangeText={setServingG} placeholder="e.g. 150" keyboardType="decimal-pad" />
-          <View style={styles.row}>
-            <View style={{ flex: 1, marginRight: 8 }}>
-              <Field label="Calories" value={calories} onChangeText={setCalories} placeholder="e.g. 90" keyboardType="decimal-pad" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Field label="Protein (g)" value={protein} onChangeText={setProtein} placeholder="e.g. 15" keyboardType="decimal-pad" />
-            </View>
-          </View>
-          <Field label="Fiber (g) — optional" value={fiber} onChangeText={setFiber} placeholder="e.g. 0" keyboardType="decimal-pad" />
-
-          <View style={styles.row}>
-            <TouchableOpacity style={[styles.btn, styles.btnGhost, { flex: 1, marginRight: 8 }]} onPress={() => { reset(); onClose(); }}>
-              <Text style={styles.btnGhostText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.btnAccent, { flex: 2 }]} onPress={handleSave}>
-              <Text style={styles.btnAccentText}>Add to Pantry</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
 function Field({ label, value, onChangeText, placeholder, keyboardType }) {
   return (
     <View style={styles.field}>
@@ -148,10 +82,85 @@ function Field({ label, value, onChangeText, placeholder, keyboardType }) {
   );
 }
 
+// ─── Add / Edit Ingredient Modal ─────────────────────────────────────────────
+function IngredientModal({ visible, onClose, onSave, editIngredient }) {
+  const [name, setName] = useState('');
+  const [servingG, setServingG] = useState('');
+  const [calories, setCalories] = useState('');
+  const [protein, setProtein] = useState('');
+  const [fiber, setFiber] = useState('');
+
+  useEffect(() => {
+    if (editIngredient) {
+      setName(editIngredient.name);
+      setServingG(String(editIngredient.servingG));
+      setCalories(String(editIngredient.calories));
+      setProtein(String(editIngredient.protein));
+      setFiber(String(editIngredient.fiber));
+    } else {
+      setName(''); setServingG(''); setCalories(''); setProtein(''); setFiber('');
+    }
+  }, [editIngredient, visible]);
+
+  const handleSave = () => {
+    if (!name.trim() || !servingG || !calories || !protein) {
+      Alert.alert('Missing fields', 'Name, serving size, calories, and protein are required.');
+      return;
+    }
+    onSave({
+      id: editIngredient?.id || uid(),
+      name: name.trim(),
+      servingG: parseFloat(servingG),
+      calories: parseFloat(calories),
+      protein: parseFloat(protein),
+      fiber: parseFloat(fiber) || 0,
+    });
+    onClose();
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.modalOverlay}
+        keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
+      >
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <Text style={styles.modalTitle}>{editIngredient ? 'Edit Ingredient' : 'New Ingredient'}</Text>
+
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. High Protein Greek Yogurt" />
+            <Field label="Serving size (g)" value={servingG} onChangeText={setServingG} placeholder="e.g. 150" keyboardType="decimal-pad" />
+            <View style={styles.row}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Field label="Calories" value={calories} onChangeText={setCalories} placeholder="e.g. 90" keyboardType="decimal-pad" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Field label="Protein (g)" value={protein} onChangeText={setProtein} placeholder="e.g. 15" keyboardType="decimal-pad" />
+              </View>
+            </View>
+            <Field label="Fiber (g) — optional" value={fiber} onChangeText={setFiber} placeholder="e.g. 0" keyboardType="decimal-pad" />
+          </ScrollView>
+
+          <View style={[styles.row, { marginTop: 16 }]}>
+            <TouchableOpacity style={[styles.btn, styles.btnGhost, { flex: 1, marginRight: 8 }]} onPress={onClose}>
+              <Text style={styles.btnGhostText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.btn, styles.btnAccent, { flex: 2 }]} onPress={handleSave}>
+              <Text style={styles.btnAccentText}>{editIngredient ? 'Save Changes' : 'Add to Pantry'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 // ─── Recipe Builder Modal ────────────────────────────────────────────────────
 function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe }) {
   const [name, setName] = useState('');
-  const [selected, setSelected] = useState({}); // id -> { ingredient, qty (g) }
+  const [selected, setSelected] = useState({});
 
   useEffect(() => {
     if (editRecipe) {
@@ -182,7 +191,6 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
     setSelected(prev => prev[id] ? { ...prev, [id]: { ...prev[id], qty: val } } : prev);
   };
 
-  // Totals
   const totals = Object.values(selected).reduce(
     (acc, { ingredient, qty }) => {
       const factor = (parseFloat(qty) || 0) / ingredient.servingG;
@@ -210,13 +218,17 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.modalOverlay}
+        keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
+      >
         <View style={[styles.modalSheet, { maxHeight: '92%' }]}>
           <View style={styles.modalHandle} />
           <Text style={styles.modalTitle}>{editRecipe ? 'Edit Recipe' : 'New Recipe'}</Text>
+
           <Field label="Recipe name" value={name} onChangeText={setName} placeholder="e.g. Pre-Workout Bowl" />
 
-          {/* Live summary */}
           {Object.keys(selected).length > 0 && (
             <View style={styles.recipeSummaryBox}>
               <View style={styles.row}>
@@ -229,9 +241,16 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
           )}
 
           <Text style={styles.fieldLabel}>Select ingredients</Text>
-          <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
+
+          <ScrollView
+            style={{ flex: 1 }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
             {ingredients.length === 0 && (
-              <Text style={[styles.textMuted, { textAlign: 'center', marginVertical: 16 }]}>No ingredients in pantry yet.</Text>
+              <Text style={[styles.textMuted, { textAlign: 'center', marginVertical: 16 }]}>
+                No ingredients in pantry yet.
+              </Text>
             )}
             {ingredients.map(ing => {
               const isSelected = !!selected[ing.id];
@@ -256,9 +275,10 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
                 </View>
               );
             })}
+            <View style={{ height: 16 }} />
           </ScrollView>
 
-          <View style={[styles.row, { marginTop: 16 }]}>
+          <View style={[styles.row, { marginTop: 12 }]}>
             <TouchableOpacity style={[styles.btn, styles.btnGhost, { flex: 1, marginRight: 8 }]} onPress={onClose}>
               <Text style={styles.btnGhostText}>Cancel</Text>
             </TouchableOpacity>
@@ -267,7 +287,7 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -320,15 +340,15 @@ function RecipeCard({ recipe, onEdit, onDelete }) {
 
 // ─── Main App ────────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState('pantry'); // 'pantry' | 'recipes'
+  const [tab, setTab] = useState('pantry');
   const [ingredients, setIngredients] = useState([]);
   const [recipes, setRecipes] = useState([]);
-  const [addIngVisible, setAddIngVisible] = useState(false);
+  const [ingModalVisible, setIngModalVisible] = useState(false);
+  const [editIngredient, setEditIngredient] = useState(null);
   const [recipeVisible, setRecipeVisible] = useState(false);
   const [editRecipe, setEditRecipe] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
-  // Load from storage
   useEffect(() => {
     (async () => {
       try {
@@ -343,24 +363,28 @@ export default function App() {
     })();
   }, []);
 
-  // Persist ingredients
   const saveIngredients = useCallback(async (list) => {
     setIngredients(list);
     await AsyncStorage.setItem(STORAGE_KEYS.INGREDIENTS, JSON.stringify(list));
   }, []);
 
-  // Persist recipes
   const saveRecipes = useCallback(async (list) => {
     setRecipes(list);
     await AsyncStorage.setItem(STORAGE_KEYS.RECIPES, JSON.stringify(list));
   }, []);
 
-  const handleAddIngredient = (ing) => {
-    saveIngredients([...ingredients, ing]);
+  const handleSaveIngredient = (ing) => {
+    const existing = ingredients.find(i => i.id === ing.id);
+    if (existing) {
+      saveIngredients(ingredients.map(i => i.id === ing.id ? ing : i));
+    } else {
+      saveIngredients([...ingredients, ing]);
+    }
+    setEditIngredient(null);
   };
 
   const handleDeleteIngredient = (id) => {
-    Alert.alert('Delete ingredient?', 'This won\'t affect saved recipes.', [
+    Alert.alert('Delete ingredient?', "This won't affect saved recipes.", [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => saveIngredients(ingredients.filter(i => i.id !== id)) },
     ]);
@@ -383,19 +407,21 @@ export default function App() {
     ]);
   };
 
-  if (!loaded) return <View style={styles.container}><StatusBar barStyle="light-content" /></View>;
+  if (!loaded) return (
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+    </View>
+  );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
 
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.logo}>⚖ Pantry</Text>
         <Text style={styles.logoSub}>nutrition tracker</Text>
       </View>
 
-      {/* Tabs */}
       <View style={styles.tabs}>
         <TouchableOpacity style={[styles.tab, tab === 'pantry' && styles.tabActive]} onPress={() => setTab('pantry')}>
           <Text style={[styles.tabText, tab === 'pantry' && styles.tabTextActive]}>Pantry ({ingredients.length})</Text>
@@ -405,16 +431,16 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Pantry Tab */}
       {tab === 'pantry' && (
         <FlatList
           data={ingredients}
           keyExtractor={i => i.id}
           contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
           ListHeaderComponent={
             <SectionHeader
               title="Ingredients"
-              action={() => setAddIngVisible(true)}
+              action={() => { setEditIngredient(null); setIngModalVisible(true); }}
               actionLabel="+ Add"
             />
           }
@@ -439,15 +465,22 @@ export default function App() {
                   {calcRatio(item.calories, item.protein)} cal/g protein
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => handleDeleteIngredient(item.id)} style={styles.deleteBtn}>
-                <Text style={{ color: C.red, fontSize: 16 }}>✕</Text>
-              </TouchableOpacity>
+              <View style={styles.cardActions}>
+                <TouchableOpacity
+                  onPress={() => { setEditIngredient(item); setIngModalVisible(true); }}
+                  style={styles.cardActionBtn}
+                >
+                  <Text style={styles.cardActionEdit}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => handleDeleteIngredient(item.id)} style={styles.cardActionBtn}>
+                  <Text style={{ color: C.red, fontSize: 16 }}>✕</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         />
       )}
 
-      {/* Recipes Tab */}
       {tab === 'recipes' && (
         <FlatList
           data={recipes}
@@ -477,11 +510,11 @@ export default function App() {
         />
       )}
 
-      {/* Modals */}
-      <AddIngredientModal
-        visible={addIngVisible}
-        onClose={() => setAddIngVisible(false)}
-        onSave={handleAddIngredient}
+      <IngredientModal
+        visible={ingModalVisible}
+        onClose={() => { setIngModalVisible(false); setEditIngredient(null); }}
+        onSave={handleSaveIngredient}
+        editIngredient={editIngredient}
       />
       <RecipeBuilderModal
         visible={recipeVisible}
@@ -490,13 +523,18 @@ export default function App() {
         onSave={handleSaveRecipe}
         editRecipe={editRecipe}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: C.bg },
+  // Fix 1: paddingTop with StatusBar.currentHeight clears the Android notification bar
+  container: {
+    flex: 1,
+    backgroundColor: C.bg,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 44,
+  },
   header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 4 },
   logo: { fontSize: 26, fontWeight: '700', color: C.accent, letterSpacing: 1 },
   logoSub: { fontSize: 12, color: C.textMuted, letterSpacing: 3, textTransform: 'uppercase', marginTop: -2 },
@@ -512,12 +550,12 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 13, fontWeight: '700', color: C.textMuted, letterSpacing: 2, textTransform: 'uppercase' },
   sectionAction: { fontSize: 15, fontWeight: '700', color: C.accent },
 
-  // Ingredient card
   ingCard: { backgroundColor: C.card, borderRadius: 12, padding: 14, marginBottom: 10, flexDirection: 'row', borderWidth: 1, borderColor: C.border },
   ingCardName: { fontSize: 16, fontWeight: '600', color: C.text, marginBottom: 2 },
-  deleteBtn: { padding: 6, justifyContent: 'flex-start', alignItems: 'center' },
+  cardActions: { alignItems: 'flex-end', justifyContent: 'space-between', paddingLeft: 8 },
+  cardActionBtn: { padding: 4 },
+  cardActionEdit: { color: C.accentDim, fontSize: 13, fontWeight: '600' },
 
-  // Recipe card
   recipeCard: { backgroundColor: C.card, borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: C.border },
   recipeCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   recipeCardName: { fontSize: 17, fontWeight: '700', color: C.text, flex: 1 },
@@ -526,29 +564,32 @@ const styles = StyleSheet.create({
   recipeIngItem: { marginBottom: 6 },
   recipeIngName: { fontSize: 14, color: C.text, fontWeight: '500' },
 
-  // Stat pill
   statPill: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4, marginRight: 6, alignItems: 'center', minWidth: 50 },
   statValue: { fontSize: 14, fontWeight: '700' },
   statLabel: { fontSize: 10, color: C.textMuted, marginTop: 1 },
 
-  // Empty
   emptyState: { alignItems: 'center', marginTop: 60 },
   emptyIcon: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { fontSize: 18, fontWeight: '700', color: C.text, marginBottom: 6 },
   emptyBody: { fontSize: 14, color: C.textMuted, textAlign: 'center' },
 
-  // Modal
+  // Fix 2: modal sheet is flex column so the ScrollView inside can grow and shrink with keyboard
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.7)' },
-  modalSheet: { backgroundColor: C.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 36 },
+  modalSheet: {
+    backgroundColor: C.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 36,
+    maxHeight: '92%',
+  },
   modalHandle: { width: 40, height: 4, backgroundColor: C.border, borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
   modalTitle: { fontSize: 20, fontWeight: '700', color: C.text, marginBottom: 16 },
 
-  // Fields
   field: { marginBottom: 12 },
   fieldLabel: { fontSize: 12, color: C.textMuted, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 },
   input: { backgroundColor: C.card, borderRadius: 10, borderWidth: 1, borderColor: C.border, color: C.text, fontSize: 15, paddingHorizontal: 14, paddingVertical: 10 },
 
-  // Recipe builder
   recipeSummaryBox: { backgroundColor: C.card, borderRadius: 12, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: C.border },
   ingRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.textFaint },
   ingRowSelected: { borderBottomColor: C.accentDim + '55' },
@@ -556,14 +597,12 @@ const styles = StyleSheet.create({
   qtyBox: { flexDirection: 'row', alignItems: 'center', marginLeft: 10 },
   qtyInput: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.accentDim, borderRadius: 8, color: C.accent, fontSize: 15, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 6, width: 60, textAlign: 'center', marginRight: 4 },
 
-  // Buttons
   btn: { borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
   btnAccent: { backgroundColor: C.accent },
   btnAccentText: { color: C.bg, fontWeight: '800', fontSize: 15 },
   btnGhost: { borderWidth: 1, borderColor: C.border },
   btnGhostText: { color: C.textMuted, fontWeight: '600', fontSize: 15 },
 
-  // Shared
   row: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   textMuted: { color: C.textMuted, fontSize: 13 },
 });
