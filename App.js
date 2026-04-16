@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useState } from 'react';
 import {
     Alert,
+    AppRegistry,
     FlatList,
     KeyboardAvoidingView,
     Modal,
@@ -37,12 +38,28 @@ const C = {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-const calcRatio = (calories, protein) => {
-  if (!protein || parseFloat(protein) === 0) return null;
-  return (parseFloat(calories) / parseFloat(protein)).toFixed(2);
+const calcRatio = (cal, prot) => {
+  if (!prot || parseFloat(prot) === 0) return null;
+  return (parseFloat(cal) / parseFloat(prot)).toFixed(2);
 };
 
-// ─── StatPill ────────────────────────────────────────────────────────────────
+// Recompute a recipe's totals from its items (used after macro sync)
+const recomputeTotals = (items) => {
+  const totals = items.reduce(
+    (acc, { ingredient, qty }) => {
+      const factor = (parseFloat(qty) || 0) / ingredient.servingG;
+      acc.cal += ingredient.calories * factor;
+      acc.protein += ingredient.protein * factor;
+      acc.fiber += ingredient.fiber * factor;
+      return acc;
+    },
+    { cal: 0, protein: 0, fiber: 0 }
+  );
+  totals.ratio = totals.protein > 0 ? (totals.cal / totals.protein).toFixed(2) : null;
+  return totals;
+};
+
+// ─── Shared UI ───────────────────────────────────────────────────────────────
 function StatPill({ label, value, color }) {
   return (
     <View style={[styles.statPill, { borderColor: color + '55' }]}>
@@ -79,6 +96,112 @@ function Field({ label, value, onChangeText, placeholder, keyboardType }) {
         autoCapitalize="none"
       />
     </View>
+  );
+}
+
+// ─── Ingredient Picker Modal (full-screen, with search + inline gram input) ───
+function IngredientPickerModal({ visible, onClose, ingredients, selected, onToggle, onSetQty }) {
+  const [search, setSearch] = useState('');
+
+  const filtered = ingredients.filter(i =>
+    i.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.pickerContainer}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
+      >
+        <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+
+        {/* Header */}
+        <View style={styles.pickerHeader}>
+          <Text style={styles.pickerTitle}>Add Ingredients</Text>
+          <TouchableOpacity onPress={onClose} style={styles.pickerDoneBtn}>
+            <Text style={styles.pickerDoneText}>Done</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Search bar */}
+        <View style={styles.searchBox}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            style={styles.searchInput}
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search ingredients..."
+            placeholderTextColor={C.textFaint}
+            autoCapitalize="none"
+          />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => setSearch('')}>
+              <Text style={{ color: C.textMuted, fontSize: 16, paddingHorizontal: 8 }}>✕</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Selected count */}
+        {Object.keys(selected).length > 0 && (
+          <View style={styles.selectedBanner}>
+            <Text style={styles.selectedBannerText}>
+              {Object.keys(selected).length} ingredient{Object.keys(selected).length !== 1 ? 's' : ''} selected
+            </Text>
+          </View>
+        )}
+
+        {/* Ingredient list */}
+        <FlatList
+          data={filtered}
+          keyExtractor={i => i.id}
+          keyboardShouldPersistTaps="always"
+          contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }}
+          ListEmptyComponent={
+            <Text style={[styles.textMuted, { textAlign: 'center', marginTop: 40 }]}>
+              {search ? 'No matches found.' : 'Pantry is empty.'}
+            </Text>
+          }
+          renderItem={({ item }) => {
+            const isSel = !!selected[item.id];
+            return (
+              <View style={[styles.pickerRow, isSel && styles.pickerRowSelected]}>
+                {/* Tap the left side to toggle */}
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                  onPress={() => onToggle(item)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.pickerCheck, isSel && styles.pickerCheckFilled]}>
+                    {isSel && <Text style={styles.pickerCheckMark}>✓</Text>}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.pickerRowName, isSel && { color: C.accent }]}>{item.name}</Text>
+                    <Text style={styles.textMuted}>
+                      {item.calories} kcal · {item.protein}g P · per {item.servingG}g
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* Gram input — only visible when selected */}
+                {isSel && (
+                  <View style={styles.qtyBox}>
+                    <TextInput
+                      style={styles.qtyInput}
+                      value={selected[item.id].qty}
+                      onChangeText={v => onSetQty(item.id, v)}
+                      keyboardType="decimal-pad"
+                      selectTextOnFocus
+                    />
+                    <Text style={styles.textMuted}>g</Text>
+                  </View>
+                )}
+              </View>
+            );
+          }}
+        />
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -160,19 +283,28 @@ function IngredientModal({ visible, onClose, onSave, editIngredient }) {
 // ─── Recipe Builder Modal ────────────────────────────────────────────────────
 function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe }) {
   const [name, setName] = useState('');
+  // selected: { [id]: { ingredient, qty: string } }
   const [selected, setSelected] = useState({});
+  const [pickerVisible, setPickerVisible] = useState(false);
 
   useEffect(() => {
-    if (editRecipe) {
-      setName(editRecipe.name);
-      const sel = {};
-      editRecipe.items.forEach(item => {
-        sel[item.ingredient.id] = { ingredient: item.ingredient, qty: String(item.qty) };
-      });
-      setSelected(sel);
-    } else {
-      setName('');
-      setSelected({});
+    if (visible) {
+      if (editRecipe) {
+        setName(editRecipe.name);
+        const sel = {};
+        editRecipe.items.forEach(item => {
+          // Merge with latest ingredient data from pantry if available
+          const fresh = ingredients.find(i => i.id === item.ingredient.id);
+          sel[item.ingredient.id] = {
+            ingredient: fresh || item.ingredient,
+            qty: String(item.qty),
+          };
+        });
+        setSelected(sel);
+      } else {
+        setName('');
+        setSelected({});
+      }
     }
   }, [editRecipe, visible]);
 
@@ -191,7 +323,17 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
     setSelected(prev => prev[id] ? { ...prev, [id]: { ...prev[id], qty: val } } : prev);
   };
 
-  const totals = Object.values(selected).reduce(
+  const removeSelected = (id) => {
+    setSelected(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const selectedItems = Object.values(selected);
+
+  const totals = selectedItems.reduce(
     (acc, { ingredient, qty }) => {
       const factor = (parseFloat(qty) || 0) / ingredient.servingG;
       acc.cal += ingredient.calories * factor;
@@ -205,11 +347,11 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
 
   const handleSave = () => {
     if (!name.trim()) { Alert.alert('Name required', 'Give your recipe a name.'); return; }
-    if (Object.keys(selected).length === 0) { Alert.alert('No ingredients', 'Select at least one ingredient.'); return; }
+    if (selectedItems.length === 0) { Alert.alert('No ingredients', 'Select at least one ingredient.'); return; }
     onSave({
       id: editRecipe?.id || uid(),
       name: name.trim(),
-      items: Object.values(selected).map(({ ingredient, qty }) => ({ ingredient, qty: parseFloat(qty) || 0 })),
+      items: selectedItems.map(({ ingredient, qty }) => ({ ingredient, qty: parseFloat(qty) || 0 })),
       totals: { ...totals, ratio },
       createdAt: editRecipe?.createdAt || Date.now(),
     });
@@ -217,85 +359,122 @@ function RecipeBuilderModal({ visible, onClose, ingredients, onSave, editRecipe 
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.modalOverlay}
-        keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
-      >
-        <View style={[styles.modalSheet, { maxHeight: '92%' }]}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>{editRecipe ? 'Edit Recipe' : 'New Recipe'}</Text>
+    <>
+      <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+          keyboardVerticalOffset={Platform.OS === 'android' ? 24 : 0}
+        >
+          <View style={[styles.modalSheet, { maxHeight: '92%' }]}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>{editRecipe ? 'Edit Recipe' : 'New Recipe'}</Text>
 
-          <Field label="Recipe name" value={name} onChangeText={setName} placeholder="e.g. Pre-Workout Bowl" />
+            {/* Recipe name */}
+            <Field
+              label="Recipe name"
+              value={name}
+              onChangeText={setName}
+              placeholder="e.g. Pre-Workout Bowl"
+            />
 
-          {Object.keys(selected).length > 0 && (
-            <View style={styles.recipeSummaryBox}>
-              <View style={styles.row}>
-                <StatPill label="kcal" value={totals.cal.toFixed(0)} color={C.accent} />
-                <StatPill label="protein" value={`${totals.protein.toFixed(1)}g`} color={C.green} />
-                <StatPill label="fiber" value={`${totals.fiber.toFixed(1)}g`} color={C.fiber} />
-                {ratio && <StatPill label="cal/g prot" value={ratio} color={C.accentDim} />}
+            {/* Live totals summary */}
+            {selectedItems.length > 0 && (
+              <View style={styles.recipeSummaryBox}>
+                <View style={styles.row}>
+                  <StatPill label="kcal" value={totals.cal.toFixed(0)} color={C.accent} />
+                  <StatPill label="protein" value={`${totals.protein.toFixed(1)}g`} color={C.green} />
+                  <StatPill label="fiber" value={`${totals.fiber.toFixed(1)}g`} color={C.fiber} />
+                  {ratio && <StatPill label="cal/g prot" value={ratio} color={C.accentDim} />}
+                </View>
               </View>
-            </View>
-          )}
-
-          <Text style={styles.fieldLabel}>Select ingredients</Text>
-
-          <ScrollView
-            style={{ flex: 1 }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            {ingredients.length === 0 && (
-              <Text style={[styles.textMuted, { textAlign: 'center', marginVertical: 16 }]}>
-                No ingredients in pantry yet.
-              </Text>
             )}
-            {ingredients.map(ing => {
-              const isSelected = !!selected[ing.id];
-              return (
-                <View key={ing.id} style={[styles.ingRow, isSelected && styles.ingRowSelected]}>
-                  <TouchableOpacity style={{ flex: 1 }} onPress={() => toggleIngredient(ing)}>
-                    <Text style={[styles.ingRowName, isSelected && { color: C.accent }]}>{ing.name}</Text>
-                    <Text style={styles.textMuted}>{ing.calories} kcal · {ing.protein}g P · per {ing.servingG}g</Text>
-                  </TouchableOpacity>
-                  {isSelected && (
+
+            {/* Selected ingredients with qty inputs */}
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {selectedItems.length === 0 ? (
+                <Text style={[styles.textMuted, { textAlign: 'center', marginVertical: 20 }]}>
+                  No ingredients added yet.{'\n'}Tap "Add Ingredients" below.
+                </Text>
+              ) : (
+                selectedItems.map(({ ingredient, qty }) => (
+                  <View key={ingredient.id} style={styles.selectedIngRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.selectedIngName}>{ingredient.name}</Text>
+                      <Text style={styles.textMuted}>
+                        {ingredient.calories} kcal · {ingredient.protein}g P · per {ingredient.servingG}g
+                      </Text>
+                    </View>
+                    {/* Gram input */}
                     <View style={styles.qtyBox}>
                       <TextInput
                         style={styles.qtyInput}
-                        value={selected[ing.id].qty}
-                        onChangeText={v => setQty(ing.id, v)}
+                        value={qty}
+                        onChangeText={v => setQty(ingredient.id, v)}
                         keyboardType="decimal-pad"
                         selectTextOnFocus
                       />
                       <Text style={styles.textMuted}>g</Text>
                     </View>
-                  )}
-                </View>
-              );
-            })}
-            <View style={{ height: 16 }} />
-          </ScrollView>
+                    {/* Remove button */}
+                    <TouchableOpacity onPress={() => removeSelected(ingredient.id)} style={{ paddingLeft: 10 }}>
+                      <Text style={{ color: C.red, fontSize: 18 }}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+              <View style={{ height: 8 }} />
+            </ScrollView>
 
-          <View style={[styles.row, { marginTop: 12 }]}>
-            <TouchableOpacity style={[styles.btn, styles.btnGhost, { flex: 1, marginRight: 8 }]} onPress={onClose}>
-              <Text style={styles.btnGhostText}>Cancel</Text>
+            {/* Add Ingredients button — opens the full-screen picker */}
+            <TouchableOpacity
+              style={[styles.btn, styles.btnOutline, { marginBottom: 10 }]}
+              onPress={() => setPickerVisible(true)}
+            >
+              <Text style={styles.btnOutlineText}>
+                {selectedItems.length === 0 ? '+ Add Ingredients' : '+ Add / Remove Ingredients'}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.btnAccent, { flex: 2 }]} onPress={handleSave}>
-              <Text style={styles.btnAccentText}>Save Recipe</Text>
-            </TouchableOpacity>
+
+            <View style={styles.row}>
+              <TouchableOpacity style={[styles.btn, styles.btnGhost, { flex: 1, marginRight: 8 }]} onPress={onClose}>
+                <Text style={styles.btnGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.btnAccent, { flex: 2 }]} onPress={handleSave}>
+                <Text style={styles.btnAccentText}>Save Recipe</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Ingredient picker — rendered outside the bottom sheet modal so it sits on top */}
+      <IngredientPickerModal
+        visible={pickerVisible}
+        onClose={() => setPickerVisible(false)}
+        ingredients={ingredients}
+        selected={selected}
+        onToggle={toggleIngredient}
+        onSetQty={setQty}
+      />
+    </>
   );
 }
 
 // ─── Recipe Card ─────────────────────────────────────────────────────────────
-function RecipeCard({ recipe, onEdit, onDelete }) {
+function RecipeCard({ recipe, onEdit, onDelete, ingredients }) {
   const [expanded, setExpanded] = useState(false);
-  const { totals } = recipe;
+
+  // Always recompute totals live from latest ingredient data
+  const freshItems = recipe.items.map(item => {
+    const fresh = ingredients.find(i => i.id === item.ingredient.id);
+    return { ingredient: fresh || item.ingredient, qty: item.qty };
+  });
+  const totals = recomputeTotals(freshItems);
 
   return (
     <TouchableOpacity style={styles.recipeCard} onPress={() => setExpanded(e => !e)} activeOpacity={0.85}>
@@ -318,7 +497,7 @@ function RecipeCard({ recipe, onEdit, onDelete }) {
       </View>
       {expanded && (
         <View style={styles.recipeIngList}>
-          {recipe.items.map(({ ingredient, qty }) => {
+          {freshItems.map(({ ingredient, qty }) => {
             const factor = qty / ingredient.servingG;
             return (
               <View key={ingredient.id} style={styles.recipeIngItem}>
@@ -363,47 +542,62 @@ export default function App() {
     })();
   }, []);
 
-  const saveIngredients = useCallback(async (list) => {
+  const persistIngredients = useCallback(async (list) => {
     setIngredients(list);
     await AsyncStorage.setItem(STORAGE_KEYS.INGREDIENTS, JSON.stringify(list));
   }, []);
 
-  const saveRecipes = useCallback(async (list) => {
+  const persistRecipes = useCallback(async (list) => {
     setRecipes(list);
     await AsyncStorage.setItem(STORAGE_KEYS.RECIPES, JSON.stringify(list));
   }, []);
 
-  const handleSaveIngredient = (ing) => {
-    const existing = ingredients.find(i => i.id === ing.id);
-    if (existing) {
-      saveIngredients(ingredients.map(i => i.id === ing.id ? ing : i));
-    } else {
-      saveIngredients([...ingredients, ing]);
+  // When an ingredient is saved (new or edited), update all recipes that use it
+  const handleSaveIngredient = useCallback((ing) => {
+    const isEdit = !!ingredients.find(i => i.id === ing.id);
+    const newIngList = isEdit
+      ? ingredients.map(i => i.id === ing.id ? ing : i)
+      : [...ingredients, ing];
+    persistIngredients(newIngList);
+
+    if (isEdit) {
+      // Propagate updated macros into every recipe that references this ingredient
+      const updatedRecipes = recipes.map(recipe => {
+        const hasIt = recipe.items.some(item => item.ingredient.id === ing.id);
+        if (!hasIt) return recipe;
+        const newItems = recipe.items.map(item =>
+          item.ingredient.id === ing.id
+            ? { ...item, ingredient: ing }
+            : item
+        );
+        return { ...recipe, items: newItems, totals: recomputeTotals(newItems) };
+      });
+      persistRecipes(updatedRecipes);
     }
+
     setEditIngredient(null);
-  };
+  }, [ingredients, recipes, persistIngredients, persistRecipes]);
 
   const handleDeleteIngredient = (id) => {
     Alert.alert('Delete ingredient?', "This won't affect saved recipes.", [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => saveIngredients(ingredients.filter(i => i.id !== id)) },
+      { text: 'Delete', style: 'destructive', onPress: () => persistIngredients(ingredients.filter(i => i.id !== id)) },
     ]);
   };
 
   const handleSaveRecipe = (recipe) => {
     const existing = recipes.find(r => r.id === recipe.id);
-    if (existing) {
-      saveRecipes(recipes.map(r => r.id === recipe.id ? recipe : r));
-    } else {
-      saveRecipes([recipe, ...recipes]);
-    }
+    const newList = existing
+      ? recipes.map(r => r.id === recipe.id ? recipe : r)
+      : [recipe, ...recipes];
+    persistRecipes(newList);
     setEditRecipe(null);
   };
 
   const handleDeleteRecipe = (id) => {
     Alert.alert('Delete recipe?', undefined, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => saveRecipes(recipes.filter(r => r.id !== id)) },
+      { text: 'Delete', style: 'destructive', onPress: () => persistRecipes(recipes.filter(r => r.id !== id)) },
     ]);
   };
 
@@ -423,14 +617,25 @@ export default function App() {
       </View>
 
       <View style={styles.tabs}>
-        <TouchableOpacity style={[styles.tab, tab === 'pantry' && styles.tabActive]} onPress={() => setTab('pantry')}>
-          <Text style={[styles.tabText, tab === 'pantry' && styles.tabTextActive]}>Pantry ({ingredients.length})</Text>
+        <TouchableOpacity
+          style={[styles.tab, tab === 'pantry' && styles.tabActive]}
+          onPress={() => setTab('pantry')}
+        >
+          <Text style={[styles.tabText, tab === 'pantry' && styles.tabTextActive]}>
+            Pantry ({ingredients.length})
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.tab, tab === 'recipes' && styles.tabActive]} onPress={() => setTab('recipes')}>
-          <Text style={[styles.tabText, tab === 'recipes' && styles.tabTextActive]}>Recipes ({recipes.length})</Text>
+        <TouchableOpacity
+          style={[styles.tab, tab === 'recipes' && styles.tabActive]}
+          onPress={() => setTab('recipes')}
+        >
+          <Text style={[styles.tabText, tab === 'recipes' && styles.tabTextActive]}>
+            Recipes ({recipes.length})
+          </Text>
         </TouchableOpacity>
       </View>
 
+      {/* Pantry Tab */}
       {tab === 'pantry' && (
         <FlatList
           data={ingredients}
@@ -481,6 +686,7 @@ export default function App() {
         />
       )}
 
+      {/* Recipes Tab */}
       {tab === 'recipes' && (
         <FlatList
           data={recipes}
@@ -503,6 +709,7 @@ export default function App() {
           renderItem={({ item }) => (
             <RecipeCard
               recipe={item}
+              ingredients={ingredients}
               onEdit={(r) => { setEditRecipe(r); setRecipeVisible(true); }}
               onDelete={handleDeleteRecipe}
             />
@@ -516,6 +723,7 @@ export default function App() {
         onSave={handleSaveIngredient}
         editIngredient={editIngredient}
       />
+
       <RecipeBuilderModal
         visible={recipeVisible}
         onClose={() => { setRecipeVisible(false); setEditRecipe(null); }}
@@ -527,9 +735,10 @@ export default function App() {
   );
 }
 
+AppRegistry.registerComponent('main', () => App);
+
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  // Fix 1: paddingTop with StatusBar.currentHeight clears the Android notification bar
   container: {
     flex: 1,
     backgroundColor: C.bg,
@@ -564,7 +773,7 @@ const styles = StyleSheet.create({
   recipeIngItem: { marginBottom: 6 },
   recipeIngName: { fontSize: 14, color: C.text, fontWeight: '500' },
 
-  statPill: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4, marginRight: 6, alignItems: 'center', minWidth: 50 },
+  statPill: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4, marginRight: 6, marginBottom: 4, alignItems: 'center', minWidth: 50 },
   statValue: { fontSize: 14, fontWeight: '700' },
   statLabel: { fontSize: 10, color: C.textMuted, marginTop: 1 },
 
@@ -573,7 +782,6 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', color: C.text, marginBottom: 6 },
   emptyBody: { fontSize: 14, color: C.textMuted, textAlign: 'center' },
 
-  // Fix 2: modal sheet is flex column so the ScrollView inside can grow and shrink with keyboard
   modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.7)' },
   modalSheet: {
     backgroundColor: C.surface,
@@ -591,21 +799,72 @@ const styles = StyleSheet.create({
   input: { backgroundColor: C.card, borderRadius: 10, borderWidth: 1, borderColor: C.border, color: C.text, fontSize: 15, paddingHorizontal: 14, paddingVertical: 10 },
 
   recipeSummaryBox: { backgroundColor: C.card, borderRadius: 12, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: C.border },
-  ingRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.textFaint },
-  ingRowSelected: { borderBottomColor: C.accentDim + '55' },
-  ingRowName: { fontSize: 15, fontWeight: '600', color: C.text, marginBottom: 2 },
-  qtyBox: { flexDirection: 'row', alignItems: 'center', marginLeft: 10 },
-  qtyInput: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.accentDim, borderRadius: 8, color: C.accent, fontSize: 15, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 6, width: 60, textAlign: 'center', marginRight: 4 },
+
+  // Selected ingredients in the recipe builder (with qty inputs)
+  selectedIngRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border },
+  selectedIngName: { fontSize: 15, fontWeight: '600', color: C.text, marginBottom: 2 },
+  qtyBox: { flexDirection: 'row', alignItems: 'center', marginLeft: 8 },
+  qtyInput: {
+    backgroundColor: C.bg, borderWidth: 1, borderColor: C.accentDim, borderRadius: 8,
+    color: C.accent, fontSize: 15, fontWeight: '700',
+    paddingHorizontal: 8, paddingVertical: 6, width: 58, textAlign: 'center', marginRight: 4,
+  },
+
+  // Ingredient picker (full-screen modal)
+  pickerContainer: {
+    flex: 1,
+    backgroundColor: C.bg,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 44,
+  },
+  pickerHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 20, paddingVertical: 16,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  pickerTitle: { fontSize: 20, fontWeight: '700', color: C.text },
+  pickerDoneBtn: { backgroundColor: C.accent, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 7 },
+  pickerDoneText: { color: C.bg, fontWeight: '800', fontSize: 15 },
+
+  searchBox: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: C.border,
+    marginHorizontal: 20, marginVertical: 12,
+    paddingHorizontal: 12,
+  },
+  searchIcon: { fontSize: 15, marginRight: 6 },
+  searchInput: { flex: 1, color: C.text, fontSize: 15, paddingVertical: 10 },
+
+  selectedBanner: {
+    backgroundColor: C.accentDim + '33',
+    borderRadius: 8, marginHorizontal: 20, marginBottom: 8,
+    paddingVertical: 6, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: C.accentDim + '66',
+  },
+  selectedBannerText: { color: C.accent, fontWeight: '600', fontSize: 13 },
+
+  pickerRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  pickerRowSelected: { borderBottomColor: C.accentDim + '55' },
+  pickerCheck: {
+    width: 24, height: 24, borderRadius: 6, borderWidth: 2, borderColor: C.border,
+    marginRight: 12, alignItems: 'center', justifyContent: 'center',
+  },
+  pickerCheckFilled: { backgroundColor: C.accent, borderColor: C.accent },
+  pickerCheckMark: { color: C.bg, fontWeight: '800', fontSize: 14 },
+  pickerRowName: { fontSize: 15, fontWeight: '600', color: C.text, marginBottom: 2 },
 
   btn: { borderRadius: 12, paddingVertical: 13, alignItems: 'center', justifyContent: 'center' },
   btnAccent: { backgroundColor: C.accent },
   btnAccentText: { color: C.bg, fontWeight: '800', fontSize: 15 },
   btnGhost: { borderWidth: 1, borderColor: C.border },
   btnGhostText: { color: C.textMuted, fontWeight: '600', fontSize: 15 },
+  btnOutline: { borderWidth: 1.5, borderColor: C.accentDim, borderRadius: 12, paddingVertical: 11 },
+  btnOutlineText: { color: C.accent, fontWeight: '700', fontSize: 14, textAlign: 'center' },
 
   row: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   textMuted: { color: C.textMuted, fontSize: 13 },
 });
 
-import { AppRegistry } from 'react-native';
 AppRegistry.registerComponent('main', () => App);
